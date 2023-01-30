@@ -1,20 +1,16 @@
 #include <msp430.h>
 #include <msp430fr5738.h>
 
+// General Constants
+#define MAX_BYTE 0xFF
 #define redLED BIT3 // Red Led at P1.3
 #define ON 1
 #define OFF 0
 
-#define FLAGS UCA1IFG // Contains the transmit & receive flags
-#define RXFLAG UCRXIFG // Receive flag
-#define TXFLAG UCTXIFG // Transmit flag
-#define TXBUFFER UCA1TXBUF // Transmit buffer
-#define RXBUFFER UCA1RXBUF // Receive buffer
-
 // TMF8805
 #define TMF8805_ADDRESS 0x41
 #define ENABLE_REGISTER 0xE0
-//const byte foo = 0x1;
+#define INITIALIZATION_KEY 0x01
 
 /*
  * Pin-outs Taken Directly From the Schematic:
@@ -37,26 +33,6 @@
  * PJ.4 Crystal 1
  * PJ.5 Crystal 1
  */
-
-// reference for launchpad code
-/* void initialize_i2c_launchPad(void)
-{
-    UCB1CTLW0 |= UCSWRST;
-
-    // Divert pins to I2C functionality
-    P4SEL1 |= (BIT1|BIT0);
-    P4SEL0 &= ~(BIT1|BIT0);
-
-    // Keep all the default values except the fields below...
-    // (UCMode 3:I2C) (Master Mode) (UCSSEL 1:ACLK, 2,3:SMCLK)
-    UCB1CTLW0 |= UCMODE_3 | UCMST | UCSSEL_3;
-
-    // Clock divider = 8 (SMCLK @ 1.048 MHz / 8 = 131 KHz)
-    UCB1BRW = 8;
-
-    // Exit the reset mode
-    UCB1CTLW0 &= ~UCSWRST;
-} */
 
 /*
  * Recommended setup directly from slau272d:
@@ -104,8 +80,26 @@
  *
  */
 
-void led(int state)
+int isGpioEnabled()
 {
+    int state = 1;
+    if ((PM5CTL0 && LOCKLPM5) == 1)
+        state = 0;
+    return state;
+}
+
+int clocksAreConfigured()
+{
+    int config = 0;
+    if ((PJSEL0 && BIT4) == 1 || (CSCTL1 && (DCOFSEL0 + DCOFSEL1)) == 1)
+        config = 1;
+    return config;
+}
+
+void ledState(int state)
+{
+    if (!isGpioEnabled())
+        return;
     P1OUT &= ~redLED;
     if (state == ON)
         P1OUT |= redLED;
@@ -123,7 +117,6 @@ void initializeGPIO()
 void initializeI2C()
 {
     UCB0CTL1 |= UCSWRST;
-    // try UCB0CTLW0 |= UCSWRST;
 
     // Divert pins to I2C functionality
     P1SEL1 |= (BIT6|BIT7);
@@ -131,69 +124,20 @@ void initializeI2C()
 
     // Keep all the default values except the fields below...
     // (UCMode 3:I2C) (Master Mode) (UCSSEL 1:ACLK, 2,3:SMCLK)
-    UCB0CTLW0 |= UCMODE_3 | UCMST | UCSSEL_3; // looks fine but ensure aclk is proper frequency
+    UCB0CTLW0 |= (UCMODE_3 | UCMST | UCSSEL_2 | UCSYNC); // looks fine but ensure aclk is proper frequency
 
-    // Clock divider = 32 (ACLK @ 16.048 MHz / 32 = ~500 KHz)
-    UCB0BRW = 32;
+    // Clock divider = 10 (SMCLK @ ~1Mhz / 8 = ~100 Khz)
+    UCB0BRW = 10;
 
-    // Exit the reset mode
+    // Exit reset mode
     UCB0CTL1 &= ~UCSWRST;
-    // try UCB0CTLW0 &= ~UCSWRST;
-    // slau272d had UCB0CTL1 &= ^UCSWRST;
-}
-
-int clocksAreConfigured()
-{
-    int config = 0;
-    if ((PJSEL0 && BIT4) == 1)
-        config = 1;
-    return config;
-}
-
-void configureClocks()
-{
-    // Reroute pins to XIN Crystal
-    PJSEL1 &= ~(BIT4);
-    PJSEL0 |= (BIT4);
-
-    // Unlock CS registers
-    CSCTL0 = CSKEY;
-    // Max setting of DCO (8Mhz)
-    //CSCTL1 |= DCOFSEL0 + DCOFSEL1;
-    __delay_cycles(10000);
-    CSCTL1 &= ~(DCOFSEL0 | DCOFSEL1);
-    CSCTL1 &= ~(DCORSEL);
-    // ACLK = XT1 + SMCLK = DCO + MCLK = DCO
-    CSCTL2 = SELA_0 + SELS_3 + SELM_3;
-    // ACLK / 1 = 16Mhz + MCLK / 1 = 8Mhz + SMCLK / 1 = 8Mhz
-    CSCTL3 = DIVA_0 + DIVS_0 + DIVM_0;
-
-    // Select high frequency mode for XT1 (XTS)
-    // Select roper driving power for XT1 (10-16Mhz range from slau272d)
-    // Ensure XT1 is on w/o bypass
-
-    CSCTL4 |= (XTS|XT1DRIVE1);
-    CSCTL4 &= ~(XT1DRIVE0|XT1BYPASS|XT1OFF);
-
-    // More drive power to oscillator (16-24Mhz) if needed
-    //CSCTL4 |= (XTS|XT1DRIVE1|XT1DRIVE0);
-    //CSCTL4 &= ~(XT1BYPASS|XT1OFF);
-
-    // Crystal stabilization loop
-    do {
-        CSCTL5 &= ~XT1OFFG; // Local fault flag
-        SFRIFG1 &= ~OFIFG; // Global fault flag
-        led(ON);
-    } while ((CSCTL5 & XT1OFFG) != 0);
-    led(OFF);
-    // Re-lock CS registers
-    CSCTL0_H = 0;
 }
 
 void delay(int seconds)
 {
     if (!clocksAreConfigured())
         return;
+
     // Through empirical analysis, in up-down mode (up to max TA0CCR0 [2^16] and back down),
     // it took us 0.132sec. Therefore, 0.132sec / (2*65535) gives us 1Mhz as expected
     // since SMCLK is 8Mhz / 8 = 1Mhz
@@ -201,7 +145,7 @@ void delay(int seconds)
     // Configure capture register with max value / 10 for higher precision later on
     TA0CCR0 = 6554;
     // Timer_A: SMCLK, divide by 8, up-down mode, clear TAR (leaves TAIE=0)
-    TA0CTL = TASSEL_1 | ID_3 | MC_3 | TACLR;
+    TA0CTL = TASSEL_2 | ID_3 | MC_3 | TACLR;
 
     // Clear flag
     TA0CTL &= ~TAIFG;
@@ -221,24 +165,82 @@ void delay(int seconds)
     TA0CTL |= MC_0;
 }
 
+void configureAclk()
+{
+    // Reroute pins to XIN Crystal
+    PJSEL1 &= ~(BIT4);
+    PJSEL0 |= (BIT4);
+
+    // Unlock CS registers
+    CSCTL0 = CSKEY;
+    // ACLK = XT1
+    CSCTL2 |= SELA_0;
+    // ACLK / 1 = 16Mhz
+    CSCTL3 |= DIVA_0;
+
+    // Select high frequency mode for XT1 (XTS)
+    // Select roper driving power for XT1 (10-16Mhz range from slau272d)
+    // Ensure XT1 is on w/o bypass
+    CSCTL4 |= (XTS|XT1DRIVE1);
+    CSCTL4 &= ~(XT1DRIVE0|XT1BYPASS|XT1OFF);
+
+    // Crystal stabilization loop
+    do {
+        CSCTL5 &= ~XT1OFFG; // Local fault flag
+        SFRIFG1 &= ~OFIFG; // Global fault flag
+    } while ((CSCTL5 & XT1OFFG) != 0);
+
+    // Re-lock CS registers
+    CSCTL0_H = 0;
+}
+
+void configureSmclkAndMclk()
+{
+   // Unlock CS registers
+   CSCTL0 = CSKEY;
+   // Max setting of DCO (8Mhz)
+   CSCTL1 |= DCOFSEL0 + DCOFSEL1;
+   // SMCLK = DCO and MCLK = DCO
+   CSCTL2 |= SELS_3 + SELM_3;
+   // MCLK / 1 = 8Mhz and SMCLK / 8 = 1Mhz
+   CSCTL3 |= DIVM_0 + DIVS_3;
+   // Re-lock CS registers
+   CSCTL0_H = 0;
+}
+
+void configureClocks(int aclk, int smclkAndMclk)
+{
+    if (aclk == ON)
+        configureAclk();
+    if (smclkAndMclk == ON)
+        configureSmclkAndMclk();
+}
+
 // Write a word (2 bytes) to I2C (address, register)
-int i2cWriteWord(unsigned char i2cAddress, unsigned char i2cRegister, unsigned int data)
+int i2cWriteWordToRegister(unsigned char i2cAddress, unsigned char i2cRegister, unsigned int data)
 {
     unsigned char byte1, byte2;
     // MSB
     byte1 = (data >> 8) & 0xFF;
     // LSB
     byte2 = data & 0xFF;
+
     // Set I2C address
     UCB0I2CSA = i2cAddress;
     // Master writes (R/W bit = Write)
     UCB0CTLW0 |= UCTR;
+    // Clear transmit flag
+    UCB0IFG &= ~UCTXIFG0;
+
     // Initiate the Start Signal
     UCB0CTLW0 |= UCTXSTT;
+    // Ensures slave address is cleared from buffer
     while ((UCB0IFG & UCTXIFG0) == 0) {}
-    // Byte = register address
     UCB0TXBUF = i2cRegister;
     while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    // added this now works to write register
+    // (ensures register is cleared from buffer)
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
 
     // Write byte 1
     UCB0TXBUF = byte1;
@@ -247,6 +249,7 @@ int i2cWriteWord(unsigned char i2cAddress, unsigned char i2cRegister, unsigned i
     // Write byte 2
     UCB0TXBUF = byte2;
     while ((UCB0IFG & UCTXIFG0) == 0) {}
+
     // Setup the stop signal
     UCB0CTLW0 |= UCTXSTP;
     while ((UCB0CTLW0 & UCTXSTP) != 0) {}
@@ -254,24 +257,23 @@ int i2cWriteWord(unsigned char i2cAddress, unsigned char i2cRegister, unsigned i
     return 1;
 }
 
-// Write a byte to I2C (address, register)
-int i2cWriteByte(unsigned char i2cAddress, unsigned char i2cRegister, unsigned char data)
+int i2cWriteByteToRegister(unsigned char i2cAddress, unsigned char i2cRegister, unsigned char data)
 {
     // Set I2C address
     UCB0I2CSA = i2cAddress;
-
     // Master writes (R/W bit = Write)
     UCB0CTLW0 |= UCTR;
-
+    // Clear transmit flag
+    UCB0IFG &= ~UCTXIFG0;
     // Initiate the Start Signal
     UCB0CTLW0 |= UCTXSTT;
     while ((UCB0IFG & UCTXIFG0) == 0) {}
-
     // Byte = register address
     UCB0TXBUF = i2cRegister;
     while ((UCB0CTLW0 & UCTXSTT) != 0) {}
-
-    // Write byte
+    // added this now works to write register
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+    // Write byte 1
     UCB0TXBUF = data;
     while ((UCB0IFG & UCTXIFG0) == 0) {}
 
@@ -283,18 +285,20 @@ int i2cWriteByte(unsigned char i2cAddress, unsigned char i2cRegister, unsigned c
 }
 
 // Read a word (2 bytes) from I2C (address, register)
-int i2cReadWord(unsigned char i2cAddress, unsigned char i2cRegister, unsigned int * data)
+int i2cReadWordFromRegister(unsigned char i2cAddress, unsigned char i2cRegister, unsigned int * data)
 {
     unsigned char byte1, byte2;
 
-    // Initialize the bytes to make sure data is received every time
+    // Initialize bytes
     byte1 = 111;
     byte2 = 111;
 
     // Write frame 1
     // Set I2C address
     UCB0I2CSA = i2cAddress;
+    // Clear transmit flag
     UCB0IFG &= ~UCTXIFG0;
+
     // Master writes (R/W bit = Write)
     UCB0CTLW0 |= UCTR;
     // Initiate the start signal
@@ -302,6 +306,7 @@ int i2cReadWord(unsigned char i2cAddress, unsigned char i2cRegister, unsigned in
     while ((UCB0IFG & UCTXIFG0) == 0) {}
     // Byte = register address
     UCB0TXBUF = i2cRegister;
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
     while ((UCB0CTLW0 & UCTXSTT) != 0) {}
     if ((UCB0IFG & UCNACKIFG) != 0)
         return 0;
@@ -328,7 +333,59 @@ int i2cReadWord(unsigned char i2cAddress, unsigned char i2cRegister, unsigned in
     return 1;
 }
 
-void initializeToF()
+// Read a word (2 bytes) from I2C (address, register)
+int i2cReadByteFromRegister(unsigned char i2cAddress, unsigned char i2cRegister, unsigned char * data)
+{
+    unsigned char byte;
+
+    // Initialize the byte to make sure data is received every time
+    byte = 111;
+
+    // Write frame 1
+    // Set I2C address
+    UCB0I2CSA = i2cAddress;
+    // Clear transmit flag
+    UCB0IFG &= ~UCTXIFG0;
+
+    // Master writes (R/W bit = Write)
+    UCB0CTLW0 |= UCTR;
+    // Initiate the start signal
+    UCB0CTLW0 |= UCTXSTT;
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+    // Byte = register address
+    UCB0TXBUF = i2cRegister;
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+    while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    if ((UCB0IFG & UCNACKIFG) != 0)
+        return 0;
+    // Master reads (R/W bit = Read)
+    UCB0CTLW0 &= ~UCTR;
+    // Initiate a repeated start signal
+    UCB0CTLW0 |= UCTXSTT;
+    while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    //Read frame 1
+    while ((UCB0IFG & UCRXIFG0) == 0) {}
+    byte = UCB0RXBUF;
+
+    //while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    // Setup the stop signal
+    UCB0CTLW0 |= UCTXSTP;
+    while ((UCB0CTLW0 & UCTXSTP) != 0) {}
+
+    *data = byte;
+
+    return 1;
+}
+
+void tofState(int state)
+{
+    PJDIR |= BIT0;
+    PJOUT &= ~BIT0;
+    if (state == ON)
+        PJOUT |= BIT0;
+}
+
+void initializeTof()
 {
     // pull enable line high
     // write a 0x1 to register 0xE0
@@ -339,51 +396,37 @@ void initializeToF()
     // else if App0 is running 0xC0 from 0x00
         // talk to App0
 
-    unsigned int data = 0xFFFF;
+    unsigned char tofStatusByte = MAX_BYTE;
+    unsigned char cpuIsReady = TMF8805_ADDRESS;
 
-    // pull enable line high
-    PJDIR |= BIT0;
-    PJOUT |= BIT0;
+    tofState(ON);
+    _delay_cycles(30000);
 
-    // write a 0x1 to register 0xE0
-    if (i2cWriteByte(TMF8805_ADDRESS, ENABLE_REGISTER, 0x01))
+    // user timer A interrupt to start a timeout here
+    while(tofStatusByte != cpuIsReady)
     {
-        //i2cReadWord(TMF8805_ADDRESS, ENABLE_REGISTER, &data);
-        led(ON);
+        _delay_cycles(15000);
+        i2cWriteByteToRegister(TMF8805_ADDRESS, ENABLE_REGISTER, INITIALIZATION_KEY);
+        _delay_cycles(500);
+        i2cReadByteFromRegister(TMF8805_ADDRESS, ENABLE_REGISTER, &tofStatusByte);
     }
 
-    if (data == ENABLE_REGISTER)
-        return; // return 1
+    ledState(ON);
+    //ledState(OFF);
 
+    // more can be done here
 }
 
-int main(void)
-{
-    // Debug
-    int checkGPIO = 1;
-    int checkClock = 1;
-    int checkI2C = 1;
-    int checkToF = 1;
-    // ...
-
-    if (checkGPIO)
-        initializeGPIO();
-    if (checkGPIO && checkClock)
-        configureClocks();
-    if (checkGPIO && checkI2C)
-        initializeI2C();
-    __delay_cycles(10000);
-    if (checkGPIO && checkI2C && checkToF)
-        initializeToF();
-
-    led(ON);
-    delay(5);
-    led(OFF);
 
 
-    //led(ON);
-    //delay(5);
-    //led(OFF);
+int main(void) {
+
+    initializeGPIO();
+    configureClocks(OFF, ON);
+    initializeI2C();
+    initializeTof();
+    runApp0FromTof();
+
 
     //_low_power_mode_0();
 }
