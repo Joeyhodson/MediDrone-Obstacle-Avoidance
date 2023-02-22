@@ -1,5 +1,6 @@
 #include <msp430.h>
 #include <msp430fr5738.h>
+#include "tmf8805.h"
 
 // General Constants
 #define MAX_BYTE 0xFF
@@ -11,6 +12,7 @@
 #define TMF8805_ADDRESS 0x41
 #define ENABLE_REGISTER 0xE0
 #define INITIALIZATION_KEY 0x01
+
 
 /*
  * Pin-outs Taken Directly From the Schematic:
@@ -385,7 +387,52 @@ void tofState(int state)
         PJOUT |= BIT0;
 }
 
-void initializeTof()
+int checkTof()
+{
+    unsigned char tofStatus = MAX_BYTE;
+    const unsigned char cpuIsReady = TMF8805_ADDRESS;
+
+    tofState(ON);
+    _delay_cycles(30000);
+
+    // user timer A interrupt to start a timeout here
+    while(tofStatus != cpuIsReady)
+    {
+        _delay_cycles(15000);
+        i2cWriteByteToRegister(TMF8805_ADDRESS, ENABLE_REGISTER, INITIALIZATION_KEY);
+        _delay_cycles(500);
+        i2cReadByteFromRegister(TMF8805_ADDRESS, ENABLE_REGISTER, &tofStatus);
+    }
+
+    return 1;
+}
+
+int checkTofTwo()
+{
+    unsigned char tofStatus = MAX_BYTE;
+    const unsigned char cpuIsReady = TMF8805_ADDRESS;
+
+    //unsigned char tofStatusArr[14] = {MAX_BYTE};
+
+    tofState(ON);
+    _delay_cycles(30000);
+
+    // user timer A interrupt to start a timeout here
+    while(tofStatus != cpuIsReady)
+    {
+        _delay_cycles(15000);
+        performWriteSequence(WAKEUP_FROM_STANDBY_KEY);
+        //i2cWriteByteToRegister(TMF8805_ADDRESS, ENABLE_REGISTER, INITIALIZATION_KEY);
+        _delay_cycles(500);
+        performReadSequence(IS_CPU_READY_KEY, &tofStatus);
+        //i2cReadByteFromRegister(TMF8805_ADDRESS, ENABLE_REGISTER, &tofStatus);
+    }
+
+    return 1;
+}
+
+/*
+int initializeTof()
 {
     // pull enable line high
     // write a 0x1 to register 0xE0
@@ -396,36 +443,52 @@ void initializeTof()
     // else if App0 is running 0xC0 from 0x00
         // talk to App0
 
-    unsigned char tofStatusByte = MAX_BYTE;
-    unsigned char cpuIsReady = TMF8805_ADDRESS;
-
-    tofState(ON);
-    _delay_cycles(30000);
-
-    // user timer A interrupt to start a timeout here
-    while(tofStatusByte != cpuIsReady)
-    {
-        _delay_cycles(15000);
-        i2cWriteByteToRegister(TMF8805_ADDRESS, ENABLE_REGISTER, INITIALIZATION_KEY);
-        _delay_cycles(500);
-        i2cReadByteFromRegister(TMF8805_ADDRESS, ENABLE_REGISTER, &tofStatusByte);
-    }
-
-    ledState(ON);
-    //ledState(OFF);
+    int tofInitialized = 0;
+    checkTof();
 
     // more can be done here
+    unsigned char appVersion = MAX_BYTE;
+    _delay_cycles(500);
+    while(appVersion != MAX_BYTE)
+    {
+        i2cReadByteFromRegister(TMF8805_ADDRESS, REGISTER_ZERO, &appVersion);
+    }
+
+    switch(appVersion)
+    {
+        case BOOTLOADER:
+            if (RAM_PATCH_FLAG)
+                downloadRamPatch(discoverRunningApp());
+            break;
+        case APP_ZERO:
+            tofInitialized = 1;
+            break;
+        default:
+            break;
+    }
+
+    return tofInitialized;
 }
-
-
+*/
+/*
+ * | BOARD # | PASS / FAIL |       TEST      |
+ * |   2     |   PASS      |  init tof comm  |
+ * |   3     |   PASS      |  init tof comm  |
+ * |   5     |   PASS      |  init tof comm  |
+ * |   4     |   PASS      |  init tof comm  |
+ * |   1     |   FAIL      |  init tof comm  |
+ */
 
 int main(void) {
 
     initializeGPIO();
     configureClocks(OFF, ON);
     initializeI2C();
-    initializeTof();
-    runApp0FromTof();
+    if (checkTofTwo())
+        ledState(ON);
+    //if (initializeTof())
+        //computeDistance(runAppZero());
+    //runApp0FromTof();
 
 
     //_low_power_mode_0();
