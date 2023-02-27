@@ -5,8 +5,9 @@
 #include <msp430.h>
 #include <msp430fr5738.h>
 
-#include "helper.h"
+#include "hcsr04.h"
 #include "ramPatch.h"
+//#include <stdint.h>
 
 // Macros
 #define LENGTH(array) ((unsigned char) (sizeof(array) / sizeof(array)[0]))
@@ -75,6 +76,9 @@
 #define RAM_REMAP_RESET_PL_0              0x11
 #define RAM_REMAP_RESET_PL_1              0x00
 #define RAM_REMAP_RESET_PL_2              0xEE
+#define ROM_REMAP_RESET_PL_0              0x12
+#define ROM_REMAP_RESET_PL_1              0x00
+#define ROM_REMAP_RESET_PL_2              0xED
 #define RAM_RESET_PL_0                    0x10
 #define RAM_RESET_PL_1                    0x00
 #define RAM_RESET_PL_2                    0xEF
@@ -109,6 +113,7 @@
 #define RAM_PATCH_KEY                     0x14 // "S 41 W 08 41 10 6D C9 41 85 3D 15 AA 51 F4 D2 9E A8 A7 AC 77 E9 A6 P" (example)
 #define RAM_REMAP_RESET_KEY               0x15 // "S 41 W 08 11 00 EE P"
 #define RAM_RESET_KEY                     0x16 // "S 41 W 08 10 00 EF p"
+#define ROM_REMAP_RESET_KEY               0x17 // "S 41 W 08 12 00 ED P"
 
 static unsigned char wakeUpFromStandby[]         = {WRITE, REG_ENABLE,    WAKEUP_FROM_STANDBY_PL};
 static unsigned char putIntoStandby[]            = {WRITE, REG_ENABLE,    PUT_INTO_STANDBY_PL};
@@ -150,6 +155,9 @@ static unsigned char setAddressPointer[]         = {WRITE, REG_EIGHT,     SET_AD
 static unsigned char ramRemapReset[]             = {WRITE, REG_EIGHT,     RAM_REMAP_RESET_PL_0,
                                                                           RAM_REMAP_RESET_PL_1,
                                                                           RAM_REMAP_RESET_PL_2};
+static unsigned char romRemapReset[]             = {WRITE, REG_EIGHT,     ROM_REMAP_RESET_PL_0,
+                                                                          ROM_REMAP_RESET_PL_1,
+                                                                          ROM_REMAP_RESET_PL_2};
 static unsigned char ramReset[]                  = {WRITE, REG_EIGHT,     RAM_RESET_PL_0,
                                                                           RAM_RESET_PL_1,
                                                                           RAM_RESET_PL_2};
@@ -184,6 +192,7 @@ int performWriteSequence(unsigned char sequenceKey)
         case START_CALIBRATION_KEY:             sequence = startCalibration; break;
         case STOP_APP0_KEY:                     sequence = stopApp0; break;
         case RAM_REMAP_RESET_KEY:               sequence = ramRemapReset; sequenceSize = 5; break;
+        case ROM_REMAP_RESET_KEY:               sequence = romRemapReset; sequenceSize = 5; break;
         case CALIBRATE_APP0_KEY:                sequence = calibrateApp0; sequenceSize = 16; break;
         case START_APP0_KEY:                    sequence = startApp0; sequenceSize = 11; break;
         case DOWNLOAD_INIT_KEY:                 sequence = downloadInit; sequenceSize = 6; break;
@@ -230,23 +239,26 @@ unsigned char* combineArray(const unsigned char* recordHead, const unsigned char
 
 int performRamPatch()
 {
+    performWriteSequence(ROM_REMAP_RESET_KEY);
+    delay(50000);
     performWriteSequence(DOWNLOAD_INIT_KEY);
     ramPatchReadStatusHelper();
     performWriteSequence(SET_ADDRESS_POINTER_KEY);
-    int lastRecord = 728;//LENGTH(mainPatchRecords);
+    int lastRecord = 677;//LENGTH(mainPatchRecords);
     const int sequenceSize = 21;
     unsigned char* fullRecord;
     unsigned int record;
     for (record = 0; record < lastRecord; record++)
     {
         fullRecord = combineArray(basePatch, mainPatchRecords[record]);
-        delay(10);
+        delay(50);
         if(!i2cWriteBytesToRegister(TMF8805_ADDRESS, fullRecord[0], fullRecord + 1, sequenceSize - 2))
             return 0;
         if(!ramPatchReadStatusHelper())
             return 0;
     }
-    delay(10);
+    //const int newSequenceSize = 17;
+    //i2cWriteBytesToRegister(TMF8805_ADDRESS, mainPatchRecordLast[0], mainPatchRecordLast + 1, newSequenceSize - 2);
     performWriteSequence(RAM_REMAP_RESET_KEY);
     return 1;
 }
@@ -256,7 +268,7 @@ int ramPatchReadStatusHelper()
     unsigned char readStatus[READ_THREE_BYTE] = {MAX_BYTE, 0, 0xFF};
     while(readStatus[2] == MAX_BYTE)
     {
-        delay(10);
+        //delay(10);
         performReadSequence(READ_STATUS_KEY, readStatus);
     }
 
@@ -334,3 +346,76 @@ int i2cReadBytesFromRegister(unsigned char i2cAddress, unsigned char i2cRegister
 
     return 1;
 }
+/*
+int32_t i2cWriteBytes(uint32_t i2cAddress, uint8_t i2cRegister, const uint8_t *payload, uint32_t payloadSize)
+{
+    // Set I2C address
+    UCB0I2CSA = i2cAddress;
+    // Master writes (R/W bit = Write)
+    UCB0CTLW0 |= UCTR;
+    // Clear transmit flag
+    UCB0IFG &= ~UCTXIFG0;
+    // Initiate the Start Signal
+    UCB0CTLW0 |= UCTXSTT;
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+
+    // Stage transmit buffer with i2c register
+    UCB0TXBUF = i2cRegister;
+    // wait for start to clear
+    while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    // added this now works to write register
+    // wait for transmit buffer flag to clear
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+
+    // write all bytes
+    // might have to add ack in between every write
+    for (int currentByte = 0; currentByte < payloadSize; currentByte++)
+    {
+        UCB0TXBUF = payload[currentByte];
+        while ((UCB0IFG & UCTXIFG0) == 0) {}
+    }
+
+    // Setup the stop signal
+    UCB0CTLW0 |= UCTXSTP;
+    while ((UCB0CTLW0 & UCTXSTP) != 0) {}
+
+    return 1;
+}
+
+int32_t i2cReadBytes(uint32_t i2cAddress, uint8_t i2cRegister, uint8_t *dataBack, uint32_t bytesToRead)
+{
+    // Write frame 1
+    // Set I2C address
+    UCB0I2CSA = i2cAddress;
+    // Clear transmit flag
+    UCB0IFG &= ~UCTXIFG0;
+
+    // Master writes (R/W bit = Write)
+    UCB0CTLW0 |= UCTR;
+    // Initiate the start signal
+    UCB0CTLW0 |= UCTXSTT;
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+    // Byte = register address
+    UCB0TXBUF = i2cRegister;
+    while ((UCB0IFG & UCTXIFG0) == 0) {}
+    while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    if ((UCB0IFG & UCNACKIFG) != 0)
+        return 0;
+    // Master reads (R/W bit = Read)
+    UCB0CTLW0 &= ~UCTR;
+    // Initiate a repeated start signal
+    UCB0CTLW0 |= UCTXSTT;
+    while ((UCB0CTLW0 & UCTXSTT) != 0) {}
+    for (int currentByte = 0; currentByte < bytesToRead; currentByte++)
+    {
+        while ((UCB0IFG & UCRXIFG0) == 0) {}
+        dataBack[currentByte] = UCB0RXBUF;
+    }
+
+    // Setup the stop signal
+    UCB0CTLW0 |= UCTXSTP;
+    while ((UCB0CTLW0 & UCTXSTP) != 0) {}
+
+    return 1;
+}
+*/
