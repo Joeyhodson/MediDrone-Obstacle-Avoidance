@@ -1,4 +1,5 @@
 #include "tmf8805.h"
+#include "mcp2517.h"
 #include <msp430.h>
 #include <msp430fr5738.h>
 
@@ -114,6 +115,10 @@ int main(void)
     initializeGPIO();
     configureClocks(ON, ON);
     initializeI2C();
+    DRV_SPI_Initialize();
+    canStbyState(OFF);
+    //initializeSPI();
+    /*
     initializeUltrasound();
     if (startTof())
         initializeTof();
@@ -122,5 +127,22 @@ int main(void)
             ledState(ON);
         else
             ledState(OFF);
+    */
+    basicCANConfiguration();
+    delay(10000);
+    initializeRAMAndSelectNormalMode();
+    delay(10000);
+    char i = 1;
+    while(i != 50)
+    {
+        i++;
+        transmitMessageFromTXFIFO();
+        delay(1000);
+    }
+    readMessageFromTEF();
+    //filterConfigurationToMatchAStandardFrameRange();
+    //while(1)
+        //receiveCANMessage();
+    //configureTBC();
     //_low_power_mode_0();
 }

@@ -15,6 +15,7 @@
 #define LOG_SWITCH          BIT4
 #define TOF_ENABLE          BIT0
 #define CAN_STBY            BIT3
+#define CHIP_SELECT         BIT2
 // Flag(s)
 #define RAM_PATCH_FLAG      0x00
 
@@ -74,7 +75,7 @@ void ledState(char state)       {port1SetState(state, LED);}
 void triggerState(char state)   {port1SetState(state, TRIGGER);}
 void echoState(char state)      {port1SetState(state, ECHO);}
 void logSwitchState(char state) {port1SetState(state, LOG_SWITCH);}
-void CanStbyState(char state)   {portJSetState(state, CAN_STBY);}
+void canStbyState(char state)   {portJSetState(state, CAN_STBY);}
 void tofState(char state)       {portJSetState(state, TOF_ENABLE);}
 
 void configureSmclkAndMclk()
@@ -141,6 +142,7 @@ void initializeGPIO()
     P1DIR &= ~(ECHO);                  // in
     PJDIR |= (TOF_ENABLE|CAN_STBY);    // out
     P1OUT &= ~(LED|TRIGGER|LOG_SWITCH);
+    PJOUT &= ~(TOF_ENABLE|CAN_STBY);
 }
 
 void initializeI2C()
@@ -157,3 +159,7 @@ void initializeI2C()
     // Exit reset mode
     UCB0CTL1 &= ~UCSWRST;
 }
+
+/*
+ * SPI Initialization & transfer functions found under MCP25xx API
+ */
