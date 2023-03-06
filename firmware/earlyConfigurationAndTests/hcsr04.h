@@ -6,49 +6,44 @@
 #define STEP_2                          0x01
 #define STEP_3                          0x02
 #define MAX_PHASE_ERROR                 0x0A
+//#define PHASE_SHIFT_DELAY               0x96
 #define PHASE_SHIFT_DELAY               0x96
 #define MINIMUM_TRIGGER_DELAY           0x05
-#define PERIOD_IN_MICROSEC              0x0F   // 1/(2^16) -> aclk
+#define PERIOD_IN_MICROSEC              0x0F // 1/(2^16) -> aclk
 #define SPEED_OF_SOUND_FACTOR           0x3A   // 2*(1/speedofSound) (microsec/cm)
+//#define CALIBRATION_BOARD_1             0x45
 // Globals
-unsigned char currentCaptureStep, badPhase;
+unsigned char currentCaptureStep, badPhase, retryCount = 0;
 unsigned int fallingEdgeTimestamp, risingEdgeTimestamp, timeDifference;
 
-void configureTimerControl() {TA0CTL = (TASSEL__ACLK|MC__CONTINUOUS|ID_3);}
+unsigned int captureDistance();
 void clearTimerACounter() {TA0CTL = TACLR;}
 
 void beginRead()
 {
+    interruptState(ON);
     currentCaptureStep = STEP_1;
     triggerState(ON);
     delay(MINIMUM_TRIGGER_DELAY);
     triggerState(OFF);
 }
 
-void captureDistanceHelper()
-{
-    interruptState(OFF);
-    configureTimerControl();
-    interruptState(ON);
-    beginRead();
-}
-
 void retryCapture()
 {
     clearTimerACounter();
-    captureDistanceHelper();
+    captureDistance();
     badPhase = 0;
 }
 
 unsigned int calculateDistance()
 {
     timeDifference = fallingEdgeTimestamp - risingEdgeTimestamp;
-    return (PERIOD_IN_MICROSEC * timeDifference) / SPEED_OF_SOUND_FACTOR;
+    return ((PERIOD_IN_MICROSEC * timeDifference) / (SPEED_OF_SOUND_FACTOR));
 }
 
 unsigned int captureDistance()
 {
-    captureDistanceHelper();
+    beginRead();
     while(currentCaptureStep != STEP_3)
     {
         if(badPhase == MAX_PHASE_ERROR)

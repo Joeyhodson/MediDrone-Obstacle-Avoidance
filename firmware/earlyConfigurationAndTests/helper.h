@@ -92,7 +92,7 @@ void configureSmclkAndMclk()
    CSCTL0_H = 0;
 }
 
-void configureAclk()
+void configureAclkWithCrystal()
 {
     // Reroute pins to XIN Crystal
     PJSEL1 &= ~(BIT4);
@@ -112,20 +112,39 @@ void configureAclk()
     do {
         CSCTL5 &= ~XT1OFFG; // Local fault flag
         SFRIFG1 &= ~OFIFG; // Global fault flag
+        ledState(ON);
+        delay(5000);
+        ledState(OFF);
+        delay(5000);
     } while ((CSCTL5 & XT1OFFG) != 0);
+    // Re-lock CS registers
+    CSCTL0_H = 0;
+}
+
+void configureAclkWithDCO()
+{
+    // Unlock CS registers
+    CSCTL0 = CSKEY;
+    // ACLK = XT1
+    CSCTL2 |= SELA_3;
+    // ACLK / 1 = 10hz
+    CSCTL3 |= DIVA__32;
     // Re-lock CS registers
     CSCTL0_H = 0;
 }
 
 void configureClocks(char aclk, char smclkAndMclk)
 {
-    if (aclk == ON) {configureAclk();}
+    if (aclk == ON) {configureAclkWithDCO();}
     if (smclkAndMclk == ON) {configureSmclkAndMclk();}
 }
+
+void configureTimerControl() {TA0CTL = (TASSEL__ACLK|MC__CONTINUOUS|ID_2);}
 
 void initializeUltrasound()
 {
     logSwitchState(ON);
+    configureTimerControl();
     // Set pin functionality to Timer A
     P1SEL0 |= ECHO;
     P1SEL1 &= ~ECHO;
@@ -151,6 +170,7 @@ void initializeI2C()
     // Divert pins to I2C functionality
     P1SEL1 |= (BIT6|BIT7);
     P1SEL0 &= ~(BIT6|BIT7);
+
     // Keep all the default values except the fields below...
     // (UCMode 3:I2C) (Master Mode) (UCSSEL 1:ACLK, 2,3:SMCLK)
     UCB0CTLW0 |= (UCMODE_3 | UCMST | UCSSEL_2 | UCSYNC); // looks fine but ensure aclk is proper frequency
@@ -158,6 +178,48 @@ void initializeI2C()
     UCB0BRW = 10;
     // Exit reset mode
     UCB0CTL1 &= ~UCSWRST;
+}
+
+// Configure UART to the popular configuration
+// 9600 baud, 8-bit data, LSB first, no parity bits, 1 stop bit
+// no flow control
+// Initial clock: SMCLK @ 1.048 MHz with oversampling
+void initializeUART(void)
+{
+    UCA0CTLW0 |= UCSWRST;
+    // Divert pins to UART functionality
+    P2SEL1 &= ~(BIT0|BIT1);
+    P2SEL0 |= (BIT0|BIT1);
+    //P2DIR |= (BIT0);
+    // Use SMCLK clock; leave other settings default
+    UCA0CTLW0 |= (UCMODE0|UCSSEL__SMCLK);
+    UCA0CTLW0 &= ~(UCSYNC|UCPEN|UC7BIT);
+    // Configure the clock dividers and modulators
+    // UCBR=6, UCBRF=13, UCBRS=0x22, UCOS16=1 (oversampling)
+    UCA0BRW = 8;
+    UCA0MCTLW = (UCBRS5|UCBRS6|UCBRS7);
+    // listen mode
+    UCA0STATW |= UCLISTEN;
+    // Exit the reset state (so transmission/reception can begin)
+    UCA0CTLW0 &= ~UCSWRST;
+}
+
+void uartWriteByte(unsigned char byte)
+{
+    // Wait for any ongoing transmission to complete
+    while ((UCA0IFG & UCTXIFG) == 0) {}
+    // Write the byte to the transmit buffer
+    UCA0TXBUF = byte;
+}
+
+// The function returns the byte; if none received, returns NULL
+unsigned char uartReadChar(void)
+{
+    unsigned char byte;
+    // Return NULL if no byte received
+    while ((UCA0IFG & UCRXIFG) == 0) {}
+    byte = UCA0RXBUF;
+    return byte;
 }
 
 /*

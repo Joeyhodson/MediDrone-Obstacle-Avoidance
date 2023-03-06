@@ -110,24 +110,30 @@ unsigned char selfTest()
 
 int main(void)
 {
+    initializeGPIO();
     if(!selfTest())
         return OFF;
-    initializeGPIO();
+
     configureClocks(ON, ON);
-    initializeI2C();
-    DRV_SPI_Initialize();
     canStbyState(OFF);
-    //initializeSPI();
-    /*
+
+    initializeUART();
     initializeUltrasound();
-    if (startTof())
-        initializeTof();
     while(1)
+    {
+        //uartWriteByte(0x55);
         if (readDistanceFromUltrasound() < 100)
             ledState(ON);
         else
             ledState(OFF);
-    */
+    }
+
+    /*
+     *
+    //initializeI2C();
+    //DRV_SPI_Initialize();
+    //if (startTof())
+        //initializeTof();
     basicCANConfiguration();
     delay(10000);
     initializeRAMAndSelectNormalMode();
@@ -145,4 +151,5 @@ int main(void)
         //receiveCANMessage();
     //configureTBC();
     //_low_power_mode_0();
+     */
 }
